@@ -39,13 +39,9 @@ class PIDiscovery {
   async discoverPis() {
     console.log('Scanning for Pis on Tailscale network...');
     
-    // For now, we'll use a simple approach - check known IP ranges
-    // In production, you might use Tailscale API or mDNS discovery
-    const potentialIPs = [
-      '100.104.127.38',  // Known PI 1
-      '100.114.175.61',  // Known PI 2
-      // Add more as needed
-    ];
+    // Get IPs from environment or use defaults
+    const piIpsEnv = process.env.PI_IPS || '100.104.127.38,100.114.175.61';
+    const potentialIPs = piIpsEnv.split(',').map(ip => ip.trim());
 
     const discovered = [];
     
@@ -56,16 +52,15 @@ class PIDiscovery {
           headers: { 'User-Agent': 'PI-Discovery/1.0' }
         });
         
-        if (response.data.success) {
+        if (response.data) {
           const piInfo = {
             id: `pi-${ip.replace(/\./g, '-')}`,
             ip: ip,
-            name: response.data.hostname || `Music Player ${this.pis.size + 1}`,
+            port: 5000,
+            name: response.data.pi_name || `Music Player ${this.pis.size + 1}`,
+            location: response.data.pi_location || 'Unknown',
             status: 'online',
-            lastSeen: new Date().toISOString(),
-            version: response.data.version || 'unknown',
-            storage: response.data.storage || {},
-            uptime: response.data.uptime || 0
+            lastSeen: new Date().toISOString()
           };
 
           this.pis.set(piInfo.id, piInfo);
@@ -75,18 +70,29 @@ class PIDiscovery {
       } catch (error) {
         // Check if this PI was previously known
         const existingPI = Array.from(this.pis.values()).find(pi => pi.ip === ip);
-        if (existingPI && existingPI.status === 'online') {
+        if (existingPI) {
+          if (existingPI.status === 'online') {
+            console.log(`❌ PI went offline: ${existingPI.name} at ${ip}`);
+          }
           existingPI.status = 'offline';
           existingPI.lastSeen = new Date().toISOString();
-          console.log(`❌ PI went offline: ${existingPI.name} at ${ip}`);
+        } else {
+          // Add as offline PI
+          const piInfo = {
+            id: `pi-${ip.replace(/\./g, '-')}`,
+            ip: ip,
+            port: 5000,
+            name: `Music Player (${ip})`,
+            location: 'Unknown',
+            status: 'offline',
+            lastSeen: new Date().toISOString()
+          };
+          this.pis.set(piInfo.id, piInfo);
         }
       }
     }
 
-    if (discovered.length > 0) {
-      await this.savePIs();
-    }
-
+    await this.savePIs();
     return discovered;
   }
 

@@ -114,41 +114,40 @@ function requireAdmin(req, res, next) {
 
 // Login endpoint handler
 function handleLogin(req, res) {
-  const { email, password } = req.body;
+  const { password, email } = req.body;
 
-  if (!email || !password) {
+  if (!password) {
     return res.status(400).json({
       success: false,
-      error: 'Email and password are required'
+      error: 'Password is required'
     });
   }
 
-  const user = Array.from(users.values()).find(u => u.email === email);
+  // Simple password authentication (matches Pi deployment)
+  const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
   
-  if (!user || user.password !== password) {
-    return res.status(401).json({
+  if (password === adminPassword) {
+    const user = {
+      id: 'admin-1',
+      email: email || 'admin@resort.com',
+      name: 'Administrator',
+      role: 'admin',
+      approvedAt: new Date().toISOString()
+    };
+    
+    const token = generateToken(user);
+    
+    res.json({
+      success: true,
+      token,
+      user
+    });
+  } else {
+    res.status(401).json({
       success: false,
-      error: 'Invalid credentials'
+      error: 'Invalid password'
     });
   }
-
-  if (!user.approvedAt) {
-    return res.status(403).json({
-      success: false,
-      error: 'Access not approved yet'
-    });
-  }
-
-  const token = generateToken(user);
-  
-  // Return user without password
-  const { password: _, ...userWithoutPassword } = user;
-  
-  res.json({
-    success: true,
-    token,
-    user: userWithoutPassword
-  });
 }
 
 // Access request endpoint handler

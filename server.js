@@ -166,20 +166,23 @@ app.use('/api', authenticateToken);
 async function proxyToPi(piId, endpoint, method = 'GET', data = null) {
   const pi = piDiscovery.getPI(piId);
   if (!pi) {
-    throw new Error(`Invalid Pi ID: ${piId}`);
+    throw new Error(`Pi not found: ${piId}`);
   }
 
-  const url = `http://${pi.ip}:${pi.port}${endpoint}`;
+  if (pi.status === 'offline') {
+    throw new Error(`Pi is offline: ${pi.name}`);
+  }
+
+  const url = `http://${pi.ip}:${pi.port || 5000}${endpoint}`;
   const startTime = Date.now();
   
   try {
     const config = {
       method,
       url,
-      timeout: 5000,
+      timeout: 10000,
       headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': `MusicPlayerProxy/1.0 (${piId})`
+        'Content-Type': 'application/json'
       }
     };
 
@@ -194,14 +197,8 @@ async function proxyToPi(piId, endpoint, method = 'GET', data = null) {
     updatePIStatus(piId, 'online', responseTime);
     piDiscovery.updatePIStatus(piId, 'online');
     
-    return {
-      success: true,
-      data: response.data,
-      piName: pi.name,
-      piId,
-      piIp: pi.ip,
-      responseTime
-    };
+    // Return data directly for cleaner API
+    return response.data;
   } catch (error) {
     const responseTime = Date.now() - startTime;
     
@@ -211,30 +208,23 @@ async function proxyToPi(piId, endpoint, method = 'GET', data = null) {
     
     console.error(`Error connecting to ${piId}:`, error.message);
     
-    return {
-      success: false,
-      error: error.message,
-      piName: pi.name,
-      piId,
-      piIp: pi.ip,
-      responseTime,
-      details: error.response?.data || 'Connection failed'
-    };
+    throw new Error(`Failed to connect to ${pi.name}: ${error.message}`);
   }
 }
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   const health = getHealthStatus();
-  const piStatus = piDiscovery.getAllPIStatus();
+  const allPis = piDiscovery.getAllPIs();
+  const onlinePis = piDiscovery.getOnlinePIs();
   
   res.json({
     ...health,
     pis: {
-      total: piStatus.total,
-      online: piStatus.online,
-      offline: piStatus.offline,
-      details: piStatus.pis
+      total: allPis.length,
+      online: onlinePis.length,
+      offline: allPis.length - onlinePis.length,
+      details: allPis
     }
   });
 });
@@ -244,11 +234,11 @@ app.get('/api/all/status', async (req, res) => {
   try {
     const pis = piDiscovery.getAllPIs();
     const results = await Promise.all(
-      Object.keys(pis).map(piId => 
-        proxyToPi(piId, '/api/status', 'GET')
-          .then(result => ({ piId, ...result }))
+      pis.map(pi => 
+        proxyToPi(pi.id, '/api/status', 'GET')
+          .then(result => ({ piId: pi.id, ...result }))
           .catch(error => ({ 
-            piId, 
+            piId: pi.id, 
             success: false, 
             error: error.message 
           }))
@@ -268,22 +258,113 @@ app.get('/api/all/status', async (req, res) => {
 });
 
 // List available players
-app.get('/api/players', (req, res) => {
+app.get('/api/players', authenticateToken, (req, res) => {
   const pis = piDiscovery.getAllPIs();
-  const players = Object.entries(pis).map(([id, config]) => ({
-    id,
-    name: config.name,
-    location: config.location || 'Unknown',
-    status: config.status,
-    lastSeen: config.lastSeen,
-    // Don't expose internal IPs to clients
-    available: config.status === 'online'
+  const players = pis.map(pi => ({
+    id: pi.id,
+    name: pi.name,
+    location: pi.location || 'Unknown',
+    status: pi.status,
+    lastSeen: pi.lastSeen,
+    available: pi.status === 'online'
   }));
   
   res.json({
     success: true,
     players
   });
+});
+
+// Individual Pi status
+app.get('/api/:piId/status', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/status', 'GET');
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Individual Pi control endpoints
+app.post('/api/:piId/control/play', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/control/play', 'POST', req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/:piId/control/stop', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/control/stop', 'POST');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/:piId/control/pause', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/control/pause', 'POST');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/:piId/control/resume', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/control/resume', 'POST');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/:piId/control/next', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/control/next', 'POST', req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/:piId/control/volume', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/control/volume', 'POST', req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Music categories
+app.get('/api/:piId/music/categories', authenticateToken, async (req, res) => {
+  try {
+    const result = await proxyToPi(req.params.piId, '/api/music/categories', 'GET');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Play history
+app.get('/api/:piId/music/history', authenticateToken, async (req, res) => {
+  try {
+    const limit = req.query.limit || 50;
+    const result = await proxyToPi(req.params.piId, `/api/music/history?limit=${limit}`, 'GET');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Admin endpoints for PI management
@@ -309,7 +390,7 @@ app.get('/api/admin/pis/:piId', authenticateToken, requireAdmin, (req, res) => {
   });
 });
 
-app.post('/api/admin/pis', authenticateToken, requireAdmin, (req, res) => {
+app.post('/api/admin/pis', authenticateToken, requireAdmin, async (req, res) => {
   const { ip, name, location, description } = req.body;
   
   if (!ip || !name) {
@@ -319,12 +400,20 @@ app.post('/api/admin/pis', authenticateToken, requireAdmin, (req, res) => {
     });
   }
   
-  const piId = piDiscovery.addPI(ip, name, location, description);
-  res.json({
-    success: true,
-    piId,
-    message: 'PI added successfully'
-  });
+  try {
+    const pi = await piDiscovery.registerPI({ ip, name, location, description });
+    res.json({
+      success: true,
+      piId: pi.id,
+      pi,
+      message: 'PI added successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 app.delete('/api/admin/pis/:piId', authenticateToken, requireAdmin, (req, res) => {
@@ -359,7 +448,7 @@ app.post('/api/admin/discover', authenticateToken, requireAdmin, async (req, res
 
 app.post('/api/admin/health-check', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const results = await piDiscovery.checkAllPIHealth();
+    const results = await piDiscovery.healthCheck();
     res.json({
       success: true,
       results

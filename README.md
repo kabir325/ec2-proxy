@@ -1,328 +1,369 @@
-# EC2 Proxy Gateway Setup
+# Music Player EC2 Proxy
 
-This EC2 instance acts as a bridge between your Vercel frontend (public internet) and your Raspberry Pis (Tailscale network).
+This is the EC2 proxy server that bridges your Vercel frontend with Raspberry Pi music players on the Tailscale network.
 
 ## Architecture
 
 ```
-Internet Users (No Tailscale needed!)
-        ↓
-Vercel Frontend (Public)
-        ↓
-    HTTPS/WSS
-        ↓
-EC2 Proxy Server (Public IP + Tailscale)
-        ↓
-Tailscale Network
-        ↓
-Raspberry Pis (100.104.127.38, 100.114.175.61)
+Frontend (Vercel) ←→ EC2 Proxy ←→ Raspberry Pi Players (Tailscale)
 ```
 
-## What This Does
+## Features
 
-The EC2 instance:
-1. Has a public IP address (accessible from internet)
-2. Is connected to Tailscale network (can reach your Pis)
-3. Runs a proxy server that forwards requests from Vercel to your Pis
-4. Handles WebSocket connections for real-time updates
+- **Authentication**: JWT-based user authentication
+- **Pi Discovery**: Automatic discovery of Raspberry Pi players
+- **Health Monitoring**: Real-time status monitoring of all players
+- **Request Proxying**: Secure routing of control commands to Pi players
+- **Admin Panel**: Management interface for Pi registration and user access
+- **Rate Limiting**: Protection against abuse
+- **Logging**: Comprehensive request and error logging
 
-## Benefits
+## Installation
 
-✅ No Tailscale needed on user devices
-✅ Access from anywhere, any device
-✅ Share with anyone (no VPN setup required)
-✅ Still secure (EC2 ↔ Pi traffic encrypted via Tailscale)
+### Prerequisites
 
-## Setup Instructions
+- Ubuntu/Debian EC2 instance
+- Node.js 18+
+- Tailscale installed and connected
+- Network access to Raspberry Pi players
 
-### 1. Launch EC2 Instance
+### Quick Setup
 
-**Recommended Specs:**
-- Instance Type: `t3.micro` or `t4g.micro` (Free tier eligible)
-- OS: Ubuntu 22.04 LTS
-- Storage: 8GB (default)
-- Security Group: Allow ports 80, 443, 3001
+1. **Clone and install:**
+   ```bash
+   cd ec2-proxy
+   npm install
+   ```
 
-**Cost**: ~$3-7/month (or free for 12 months with AWS free tier)
+2. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   nano .env
+   ```
 
-### 2. Connect to EC2
+3. **Update configuration:**
+   ```bash
+   # Required settings in .env:
+   JWT_SECRET=your-super-secret-key-min-32-chars
+   ADMIN_PASSWORD=your-secure-admin-password
+   PI_IPS=100.104.127.38,100.114.175.61  # Your Pi Tailscale IPs
+   ALLOWED_ORIGINS=https://your-frontend.vercel.app
+   ```
+
+4. **Run setup script:**
+   ```bash
+   chmod +x setup.sh
+   ./setup.sh
+   ```
+
+5. **Start the service:**
+   ```bash
+   sudo systemctl start music-proxy
+   ```
+
+### Manual Installation
+
+1. **Install Node.js 18+:**
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+   sudo apt-get install -y nodejs
+   ```
+
+2. **Install Tailscale:**
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+4. **Create directories:**
+   ```bash
+   mkdir -p logs
+   ```
+
+5. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your settings
+   ```
+
+6. **Create systemd service:**
+   ```bash
+   sudo tee /etc/systemd/system/music-proxy.service > /dev/null <<EOF
+   [Unit]
+   Description=Music Player Proxy Server
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=$USER
+   WorkingDirectory=$(pwd)
+   Environment=NODE_ENV=production
+   ExecStart=$(which node) server.js
+   Restart=always
+   RestartSec=10
+   StandardOutput=journal
+   StandardError=journal
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   ```
+
+7. **Enable and start service:**
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable music-proxy
+   sudo systemctl start music-proxy
+   ```
+
+## Configuration
+
+### Environment Variables (.env)
 
 ```bash
-ssh -i your-key.pem ubuntu@your-ec2-public-ip
+# Server Configuration
+PORT=3001                    # Server port
+NODE_ENV=production         # Environment
+
+# Authentication
+JWT_SECRET=your-secret-key  # MUST be 32+ characters
+JWT_EXPIRES_IN=7d          # Token expiration
+ADMIN_PASSWORD=admin123    # Admin login password
+
+# Pi Discovery
+PI_IPS=100.104.127.38,100.114.175.61  # Tailscale IPs (comma-separated)
+SCAN_INTERVAL=30000        # Discovery interval (ms)
+TAILSCALE_NETWORK_RANGE=100.  # Tailscale IP range
+
+# CORS
+ALLOWED_ORIGINS=https://your-app.vercel.app,http://localhost:3000
+
+# Monitoring
+LOG_LEVEL=info
+MAX_LOG_SIZE=10485760
+LOG_RETENTION_DAYS=7
 ```
 
-### 3. Install Tailscale on EC2
+### Important Settings
 
-```bash
-# Install Tailscale
-curl -fsSL https://tailscale.com/install.sh | sh
-
-# Start Tailscale
-sudo tailscale up
-
-# Verify connection to Pis
-ping 100.104.127.38
-ping 100.114.175.61
-```
-
-### 4. Install Node.js
-
-```bash
-# Install Node.js 20
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Verify
-node --version
-npm --version
-```
-
-### 5. Setup Proxy Server
-
-```bash
-# Create directory
-mkdir -p /home/ubuntu/music-proxy
-cd /home/ubuntu/music-proxy
-
-# Copy files (from your computer)
-# scp -i your-key.pem -r ec2-proxy/* ubuntu@your-ec2-ip:/home/ubuntu/music-proxy/
-```
-
-### 6. Install Dependencies
-
-```bash
-cd /home/ubuntu/music-proxy
-npm install
-```
-
-### 7. Configure Environment
-
-```bash
-nano .env
-```
-
-Add:
-```bash
-PORT=3001
-PI1_IP=100.104.127.38
-PI2_IP=100.114.175.61
-PI_API_PORT=5000
-ALLOWED_ORIGINS=https://your-vercel-app.vercel.app
-```
-
-### 8. Setup SSL (Optional but Recommended)
-
-```bash
-# Install Certbot
-sudo apt install certbot
-
-# Get SSL certificate (requires domain name)
-sudo certbot certonly --standalone -d your-domain.com
-
-# Certificates will be at:
-# /etc/letsencrypt/live/your-domain.com/fullchain.pem
-# /etc/letsencrypt/live/your-domain.com/privkey.pem
-```
-
-### 9. Create Systemd Service
-
-```bash
-sudo nano /etc/systemd/system/music-proxy.service
-```
-
-Add:
-```ini
-[Unit]
-Description=Music Player Proxy Service
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/music-proxy
-Environment="NODE_ENV=production"
-ExecStart=/usr/bin/node server.js
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 10. Start Service
-
-```bash
-# Reload systemd
-sudo systemctl daemon-reload
-
-# Enable service
-sudo systemctl enable music-proxy.service
-
-# Start service
-sudo systemctl start music-proxy.service
-
-# Check status
-sudo systemctl status music-proxy.service
-```
-
-### 11. Configure Security Group
-
-In AWS Console:
-1. Go to EC2 → Security Groups
-2. Edit inbound rules:
-   - Port 80 (HTTP): 0.0.0.0/0
-   - Port 443 (HTTPS): 0.0.0.0/0
-   - Port 3001 (Proxy): 0.0.0.0/0
-
-### 12. Test Proxy
-
-```bash
-# From your computer
-curl http://your-ec2-public-ip:3001/health
-
-# Should return:
-# {"status":"healthy","timestamp":"..."}
-```
-
-## Update Frontend Configuration
-
-Update your Vercel environment variables:
-
-```bash
-# Instead of Pi IPs, use EC2 proxy
-NEXT_PUBLIC_PROXY_URL=http://your-ec2-public-ip:3001
-# Or with domain:
-NEXT_PUBLIC_PROXY_URL=https://your-domain.com
-```
+- **JWT_SECRET**: Must be a secure random string (32+ characters)
+- **PI_IPS**: Comma-separated list of your Pi Tailscale IPs
+- **ALLOWED_ORIGINS**: Your frontend URL(s) for CORS
+- **ADMIN_PASSWORD**: Secure password for admin access
 
 ## API Endpoints
 
-The proxy exposes these endpoints:
+### Authentication
+- `POST /api/auth/login` - User login
+- `GET /api/auth/validate` - Token validation
+- `POST /api/auth/request-access` - Request access
+- `GET /api/auth/access-status` - Check request status
 
-- `GET /health` - Proxy health check
-- `GET /api/pi1/status` - Pi 1 status
-- `GET /api/pi2/status` - Pi 2 status
-- `POST /api/pi1/control` - Control Pi 1
-- `POST /api/pi2/control` - Control Pi 2
-- `GET /api/pi1/stats` - Pi 1 statistics
-- `GET /api/pi2/stats` - Pi 2 statistics
+### Player Management
+- `GET /api/players` - List all players
+- `GET /api/:piId/status` - Get player status
+- `POST /api/:piId/control/play` - Start playback
+- `POST /api/:piId/control/stop` - Stop playback
+- `POST /api/:piId/control/pause` - Pause playback
+- `POST /api/:piId/control/resume` - Resume playback
+- `POST /api/:piId/control/next` - Next song
+- `POST /api/:piId/control/volume` - Set volume
 
-## Monitoring
+### Admin Endpoints
+- `GET /api/admin/pis` - Manage Pi players
+- `POST /api/admin/pis` - Add new Pi
+- `DELETE /api/admin/pis/:piId` - Remove Pi
+- `POST /api/admin/discover` - Discover new Pis
+- `POST /api/admin/health-check` - Check all Pi health
+- `GET /api/admin/metrics` - System metrics
+
+### System
+- `GET /health` - Health check
+
+## Service Management
 
 ```bash
-# View logs
-sudo journalctl -u music-proxy.service -f
+# Start service
+sudo systemctl start music-proxy
 
-# Check service status
-sudo systemctl status music-proxy.service
+# Stop service
+sudo systemctl stop music-proxy
 
 # Restart service
-sudo systemctl restart music-proxy.service
+sudo systemctl restart music-proxy
+
+# Check status
+sudo systemctl status music-proxy
+
+# View logs
+sudo journalctl -u music-proxy -f
+
+# Enable auto-start
+sudo systemctl enable music-proxy
+
+# Disable auto-start
+sudo systemctl disable music-proxy
 ```
 
-## Security Considerations
+## Testing
 
-1. **CORS**: Only allow your Vercel domain
-2. **Rate Limiting**: Implemented in proxy (100 req/15min per IP)
-3. **SSL**: Use HTTPS in production
-4. **Firewall**: Only open necessary ports
-5. **Updates**: Keep system updated
+### Health Check
+```bash
+curl http://localhost:3001/health
+```
 
-## Cost Optimization
+### Login Test
+```bash
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password": "admin123"}'
+```
 
-**Free Tier (12 months):**
-- t3.micro: 750 hours/month free
-- Data transfer: 15GB/month free
-
-**After Free Tier:**
-- t3.micro: ~$7/month
-- t4g.micro: ~$5/month (ARM-based, cheaper)
-- Data transfer: ~$0.09/GB
-
-**Estimated Monthly Cost**: $5-10/month
+### Pi Discovery Test
+```bash
+# Get auth token first, then:
+curl -X POST http://localhost:3001/api/admin/discover \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
 
 ## Troubleshooting
 
-### Can't reach Pis from EC2
-
+### Service Won't Start
 ```bash
-# Check Tailscale status
-sudo tailscale status
-
-# Ping Pis
-ping 100.104.127.38
-ping 100.114.175.61
-
-# Check if Pi services are running
-curl http://100.104.127.38:5000/api/status
-```
-
-### Proxy not responding
-
-```bash
-# Check service
-sudo systemctl status music-proxy.service
-
 # Check logs
-sudo journalctl -u music-proxy.service -n 50
+sudo journalctl -u music-proxy -n 50
 
-# Check if port is listening
-sudo netstat -tulpn | grep 3001
+# Check configuration
+cat .env
+
+# Test manually
+node server.js
 ```
 
-### CORS errors
+### Pi Discovery Issues
+```bash
+# Check Tailscale connection
+tailscale status
+
+# Test Pi connectivity
+curl http://PI_TAILSCALE_IP:5000/api/health
+
+# Check Pi IPs in .env
+grep PI_IPS .env
+```
+
+### Authentication Issues
+```bash
+# Verify JWT_SECRET is set
+grep JWT_SECRET .env
+
+# Check token expiration
+# Tokens expire based on JWT_EXPIRES_IN setting
+
+# Test login endpoint
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password": "YOUR_ADMIN_PASSWORD"}'
+```
+
+### CORS Issues
+```bash
+# Check allowed origins
+grep ALLOWED_ORIGINS .env
+
+# Verify frontend URL is included
+# Must match exactly (including https://)
+```
+
+## Security
+
+### Best Practices
+- Use strong JWT_SECRET (32+ random characters)
+- Use secure ADMIN_PASSWORD
+- Keep system updated
+- Monitor access logs
+- Use HTTPS in production
+- Restrict EC2 security groups
+
+### Firewall Configuration
+```bash
+# Allow only necessary ports
+sudo ufw allow 22    # SSH
+sudo ufw allow 3001  # Proxy server
+sudo ufw enable
+```
+
+## Monitoring
+
+### Logs
+```bash
+# Service logs
+sudo journalctl -u music-proxy -f
+
+# Application logs
+tail -f logs/app.log
+
+# Error logs
+tail -f logs/error.log
+```
+
+### Metrics
+Access admin metrics endpoint:
+```bash
+GET /api/admin/metrics
+```
+
+### Health Monitoring
+Set up monitoring for:
+- Service uptime
+- Pi connectivity
+- Response times
+- Error rates
+
+## Scaling
+
+### Multiple EC2 Instances
+- Use load balancer
+- Share Pi configuration
+- Implement session storage (Redis)
+
+### High Availability
+- Auto Scaling Groups
+- Health checks
+- Backup configurations
+
+## Updates
 
 ```bash
-# Update .env with correct Vercel URL
-nano /home/ubuntu/music-proxy/.env
+# Update dependencies
+npm update
 
 # Restart service
-sudo systemctl restart music-proxy.service
+sudo systemctl restart music-proxy
+
+# Check for issues
+sudo systemctl status music-proxy
 ```
 
-## Maintenance
+## Support
 
-### Update Proxy Code
+For issues:
+1. Check service logs: `sudo journalctl -u music-proxy -f`
+2. Verify configuration: `cat .env`
+3. Test connectivity: `curl http://localhost:3001/health`
+4. Check Pi connectivity: Test Pi health endpoints
+5. Review this documentation
 
-```bash
-# Stop service
-sudo systemctl stop music-proxy.service
+## Integration
 
-# Update files
-cd /home/ubuntu/music-proxy
-# Copy new files
+This proxy integrates with:
+- **Frontend**: Next.js application on Vercel
+- **Pi Players**: Python Flask applications on Raspberry Pis
+- **Tailscale**: For secure networking
 
-# Install dependencies
-npm install
-
-# Start service
-sudo systemctl start music-proxy.service
-```
-
-### Renew SSL Certificate
-
-```bash
-# Certbot auto-renews, but to manually renew:
-sudo certbot renew
-sudo systemctl restart music-proxy.service
-```
-
-## Alternative: Use Tailscale Funnel
-
-Tailscale has a feature called "Funnel" that can expose services publicly without EC2:
-
-```bash
-# On one of your Pis
-tailscale funnel 5000
-```
-
-This gives you a public URL, but has limitations. EC2 proxy gives you more control.
-
-## Summary
-
-With this setup:
-- ✅ Anyone can access your frontend (no Tailscale needed)
-- ✅ Secure communication (EC2 ↔ Pi via Tailscale)
-- ✅ Low cost (~$5-10/month)
-- ✅ Full control over proxy logic
-- ✅ Can add authentication, caching, etc.
+See `INTEGRATION_OVERVIEW.md` for complete system architecture.
